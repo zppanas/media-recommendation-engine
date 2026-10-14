@@ -1,0 +1,8 @@
+"""Command-line entry point for creating the local database tables."""
+
+from app.database import init_db
+
+
+if __name__ == "__main__":
+    init_db()
+    print("Database initialized.")
