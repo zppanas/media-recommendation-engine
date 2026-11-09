@@ -4,6 +4,8 @@ from sqlalchemy.orm import sessionmaker
 from app.database import create_database_engine, init_db, engine as application_engine
 from app.main import app
 from app.database import get_session
+from argon2 import PasswordHasher
+import os
 
 @pytest.fixture
 def isolated_client(tmp_path):
@@ -14,7 +16,16 @@ def isolated_client(tmp_path):
     def override():
         with sessions() as session: yield session
     app.dependency_overrides[get_session] = override
+    os.environ.update({"AUTH_USERNAME": "test-user", "AUTH_PASSWORD_HASH": PasswordHasher().hash("test-password"), "AUTH_SECRET_KEY": "test-secret-key-that-is-long-enough-12345"})
     with TestClient(app) as client:
+        assert client.post("/login", json={"username":"test-user", "password":"test-password"}).status_code == 200
+        original_request = client.request
+        def authenticated_request(method, url, **kwargs):
+            headers = dict(kwargs.pop("headers", {}) or {})
+            csrf = next((v for k, v in client.cookies.items() if k == "media_csrf"), "")
+            headers.setdefault("X-CSRF-Token", csrf)
+            return original_request(method, url, headers=headers, **kwargs)
+        client.request = authenticated_request
         yield client, db
     app.dependency_overrides.pop(get_session, None)
     engine.dispose()

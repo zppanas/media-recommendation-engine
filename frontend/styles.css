@@ -37,6 +37,7 @@ h1,h2,h3{letter-spacing:-.045em}
 .wordmark{letter-spacing:-.05em}
 .eyebrow{font-family:"Courier New",monospace;letter-spacing:.16em}
 .button,.field label,.site-header nav a{font-family:"Avenir Next","Trebuchet MS",sans-serif}
+.login-shell{align-items:center;display:flex;justify-content:center;min-height:100vh;padding:24px}.login-card{max-width:440px;width:100%}.login-card form{display:grid;gap:18px}.login-card .error{margin:0;padding:12px}
 body{font-family:"Helvetica Neue",Helvetica,Arial,sans-serif}
 .button,.field label,.site-header nav a{font-family:"Helvetica Neue",Helvetica,Arial,sans-serif}
 body{font-family:"Avenir Next","Trebuchet MS",sans-serif}

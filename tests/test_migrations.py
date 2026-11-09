@@ -1,6 +1,7 @@
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, inspect
+from pathlib import Path
 
 def test_alembic_upgrade_fresh_temporary_database(tmp_path):
     db = tmp_path / "migration.db"

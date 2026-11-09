@@ -2,8 +2,9 @@
 <html lang="en">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Media Archive</title><link rel="stylesheet" href="/app/styles.css"></head>
 <body>
-<header class="site-header"><a class="wordmark" href="#catalog">Media Archive<span>·</span></a><nav aria-label="Primary"><a href="#catalog">Catalog</a><a href="#library">My Library</a><a href="#diary">My Diary</a></nav></header>
+<header class="site-header"><a class="wordmark" href="#catalog">Media Archive<span>·</span></a><nav aria-label="Primary"><a href="#catalog">Catalog</a><a href="#library">My Library</a><a href="#diary">My Diary</a><button class="button secondary" id="logout">Log out</button></nav></header>
 <main id="app" tabindex="-1"><p class="loading">Loading your archive…</p></main>
 <div id="toast" role="status" aria-live="polite"></div>
 <script src="/app/app.js"></script>
+<script>document.getElementById('logout').onclick=async()=>{const csrf=document.cookie.split('; ').find(x=>x.startsWith('media_csrf='))?.split('=')[1];await fetch('/logout',{method:'POST',headers:{'X-CSRF-Token':decodeURIComponent(csrf||'')}});location.href='/login'}</script>
 </body></html>

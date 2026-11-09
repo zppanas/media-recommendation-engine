@@ -44,6 +44,7 @@ class Media(TimestampMixin, Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
+    creator: Mapped[Optional[str]] = mapped_column(String(255))
     media_type: Mapped[MediaType] = mapped_column(SqlEnum(MediaType), nullable=False)
     release_year: Mapped[Optional[int]] = mapped_column(Integer)
     description: Mapped[Optional[str]] = mapped_column(Text)

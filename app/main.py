@@ -1,17 +1,126 @@
 from datetime import date, datetime
+import os
+import secrets
+import time
+from pathlib import Path
 from typing import List, Optional
-from fastapi import Depends, FastAPI, HTTPException, Query
+from argon2 import PasswordHasher
+from argon2.exceptions import VerificationError, VerifyMismatchError
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
+from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
-from app.database import get_session
+from app.database import get_session, validate_database_connection
 from app.models import ActivityType, FeedbackType, LibraryEntry, LibraryStatus, Media, MediaLog, MediaTag, MediaType, Tag, UserFeedback
 
-app = FastAPI(title="Personal Media Diary and Recommendation App")
+app = FastAPI(title="Personal Media Diary and Recommendation App", docs_url=None, redoc_url=None, openapi_url=None)
+
+SESSION_COOKIE = "media_session"
+CSRF_COOKIE = "media_csrf"
+SESSION_MAX_AGE = 60 * 60 * 12
+password_hasher = PasswordHasher()
+FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
+login_attempts = {}
+MAX_LOGIN_ATTEMPTS = 5
+LOGIN_WINDOW = 60
+
+def _auth_config():
+    username = os.getenv("AUTH_USERNAME")
+    password_hash = os.getenv("AUTH_PASSWORD_HASH")
+    secret = os.getenv("AUTH_SECRET_KEY")
+    if not username or not password_hash or not secret:
+        return None
+    if len(secret) < 32:
+        raise RuntimeError("AUTH_SECRET_KEY must contain at least 32 characters")
+    return username, password_hash, URLSafeTimedSerializer(secret, salt="media-session")
+
+@app.on_event("startup")
+async def validate_production_auth():
+    if os.getenv("ENVIRONMENT", "development").lower() in {"production", "staging"} and not _auth_config():
+        raise RuntimeError("AUTH_USERNAME, AUTH_PASSWORD_HASH, and AUTH_SECRET_KEY are required in production/staging")
+    if os.getenv("ENVIRONMENT", "development").lower() in {"production", "staging"}:
+        try:
+            validate_database_connection()
+        except Exception as exc:
+            raise RuntimeError("DATABASE_URL is configured but the database connection failed") from exc
+
+def _cookie_secure():
+    return os.getenv("ENVIRONMENT", "development").lower() in {"production", "staging"}
+
+def _session_user(request: Request):
+    config = _auth_config()
+    if not config: return None
+    try:
+        data = config[2].loads(request.cookies.get(SESSION_COOKIE, ""), max_age=SESSION_MAX_AGE)
+        return data.get("sub") if data.get("sub") == config[0] else None
+    except (BadSignature, SignatureExpired):
+        return None
+
+@app.middleware("http")
+async def require_authentication(request: Request, call_next):
+    path = request.url.path
+    public = path in {"/health", "/login", "/login.css"}
+    if not public and not _session_user(request):
+        if path.startswith("/app") and request.method == "GET":
+            return RedirectResponse("/login", status_code=307)
+        return JSONResponse({"detail": "Authentication required"}, status_code=401)
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"} and path != "/login":
+        csrf = request.headers.get("X-CSRF-Token")
+        if not csrf or not secrets.compare_digest(csrf, request.cookies.get(CSRF_COOKIE, "")):
+            return JSONResponse({"detail": "CSRF validation failed"}, status_code=403)
+    response = await call_next(request)
+    return response
+
+class LoginIn(BaseModel):
+    username: str
+    password: str
+
+@app.get("/login", include_in_schema=False)
+def login_page():
+    return FileResponse(FRONTEND_DIR / "login.html")
+
+@app.get("/login.css", include_in_schema=False)
+def login_styles():
+    return FileResponse(FRONTEND_DIR / "styles.css", media_type="text/css")
+
+@app.post("/login", include_in_schema=False)
+def login(credentials: LoginIn, request: Request):
+    now = time.monotonic()
+    client_key = (request.client.host if request.client else "unknown") + ":" + credentials.username
+    attempts = [stamp for stamp in login_attempts.get(client_key, []) if now - stamp < LOGIN_WINDOW]
+    if len(attempts) >= MAX_LOGIN_ATTEMPTS:
+        raise HTTPException(429, "Too many login attempts; try again later")
+    config = _auth_config()
+    if not config:
+        raise HTTPException(503, "Authentication is not configured")
+    try:
+        valid = config[0] == credentials.username and password_hasher.verify(config[1], credentials.password)
+    except (VerifyMismatchError, VerificationError):
+        valid = False
+    if not valid:
+        attempts.append(now)
+        login_attempts[client_key] = attempts
+        raise HTTPException(401, "Invalid credentials")
+    login_attempts.pop(client_key, None)
+    csrf = secrets.token_urlsafe(32)
+    response = JSONResponse({"ok": True})
+    response.set_cookie(SESSION_COOKIE, config[2].dumps({"sub": config[0]}), max_age=SESSION_MAX_AGE,
+                       httponly=True, secure=_cookie_secure(), samesite="lax", path="/")
+    response.set_cookie(CSRF_COOKIE, csrf, max_age=SESSION_MAX_AGE, secure=_cookie_secure(), samesite="lax", path="/")
+    return response
+
+@app.post("/logout", include_in_schema=False)
+def logout():
+    response = JSONResponse({"ok": True})
+    response.delete_cookie(SESSION_COOKIE, path="/")
+    response.delete_cookie(CSRF_COOKIE, path="/")
+    return response
 class MediaIn(BaseModel):
-    title: str = Field(min_length=1, max_length=255); media_type: MediaType
+    title: str = Field(min_length=1, max_length=255); creator: Optional[str] = Field(None, max_length=255); media_type: MediaType
     release_year: Optional[int] = Field(None, ge=1000, le=9999); description: Optional[str] = None
 class MediaOut(MediaIn):
     model_config = ConfigDict(from_attributes=True); id: int
@@ -50,6 +159,7 @@ def health(): return {"status":"ok"}
 def create_media(d:MediaIn,s:Session=Depends(get_session)):
     duplicate=s.scalar(select(Media).where(
         Media.title==d.title.strip(),
+        Media.creator==d.creator,
         Media.media_type==d.media_type,
         Media.release_year==d.release_year,
         Media.description==d.description,
@@ -60,7 +170,7 @@ def create_media(d:MediaIn,s:Session=Depends(get_session)):
 @app.get("/media",response_model=List[MediaOut])
 def list_media(search:Optional[str]=None,media_type:Optional[MediaType]=None,release_year:Optional[int]=None,s:Session=Depends(get_session)):
     q=select(Media).order_by(Media.title)
-    if search:q=q.where(or_(Media.title.ilike(f"%{search}%"),Media.description.ilike(f"%{search}%")))
+    if search:q=q.where(or_(Media.title.ilike(f"%{search}%"),Media.creator.ilike(f"%{search}%"),Media.description.ilike(f"%{search}%")))
     if media_type:q=q.where(Media.media_type==media_type)
     if release_year:q=q.where(Media.release_year==release_year)
     return s.scalars(q).all()
@@ -68,7 +178,7 @@ def list_media(search:Optional[str]=None,media_type:Optional[MediaType]=None,rel
 def list_library(search:Optional[str]=None,media_type:Optional[MediaType]=None,release_year:Optional[int]=None,status:Optional[LibraryStatus]=None,s:Session=Depends(get_session)):
     """Return only works with a library entry for the current personal library."""
     q=select(Media).join(LibraryEntry,LibraryEntry.media_id==Media.id).order_by(Media.title)
-    if search:q=q.where(or_(Media.title.ilike(f"%{search}%"),Media.description.ilike(f"%{search}%")))
+    if search:q=q.where(or_(Media.title.ilike(f"%{search}%"),Media.creator.ilike(f"%{search}%"),Media.description.ilike(f"%{search}%")))
     if media_type:q=q.where(Media.media_type==media_type)
     if release_year:q=q.where(Media.release_year==release_year)
     if status:q=q.where(LibraryEntry.status==status)
@@ -158,4 +268,4 @@ def list_feedback(mid:int,s:Session=Depends(get_session)):
     media_or_404(s,mid);return s.scalars(select(UserFeedback).where(UserFeedback.media_id==mid).order_by(UserFeedback.created_at.desc())).all()
 
 # The frontend is intentionally static: the API remains the source of truth.
-app.mount("/app", StaticFiles(directory="frontend", html=True), name="frontend")
+app.mount("/app", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")

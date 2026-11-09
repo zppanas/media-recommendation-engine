@@ -34,6 +34,10 @@ Run tests:
 pytest
 ```
 
+Configure the single account with deployment secrets; do not commit them. Generate a hash with `python -c "from argon2 import PasswordHasher; print(PasswordHasher().hash(input('Password: ')))"`, then set `AUTH_USERNAME`, `AUTH_PASSWORD_HASH`, and a random `AUTH_SECRET_KEY` of at least 32 characters. Set `ENVIRONMENT=production` to enable secure cookies. `/health`, `/login` (GET/POST), and login assets are public; the dashboard, all application APIs, `/docs`, `/redoc`, and the OpenAPI schema require authentication. Unsafe cookie-authenticated requests require the `X-CSRF-Token` header matching the CSRF cookie.
+
+PostgreSQL uses `psycopg` and accepts `postgresql://` or `postgres://` URLs, which are normalized to the psycopg SQLAlchemy dialect. In production/staging, `DATABASE_URL` is required and the application verifies the connection during startup; schema changes must be applied with Alembic. Set `POSTGRES_TEST_URL` to a disposable PostgreSQL database to run the opt-in PostgreSQL integration tests.
+
 The integration tests create a separate temporary SQLite database for each API scenario by overriding the session dependency; they never use or reset the default local database. Migration coverage runs `alembic upgrade head` against a fresh temporary database.
 
 The API is available at `http://127.0.0.1:8000`; interactive OpenAPI documentation is at `/docs`. Set `DATABASE_URL` for another SQLAlchemy URL, for example `DATABASE_URL=sqlite:///./my_media.db alembic upgrade head`.
